@@ -1,6 +1,7 @@
 import os
 
 from flask import Flask, jsonify, request
+
 from shipping.flags import all_flags, is_enabled
 from shipping.rates import RATES, calculate_shipping
 
