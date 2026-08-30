@@ -1,9 +1,8 @@
 import os
 
 from flask import Flask, jsonify, request
-
-from shipping.rates import RATES, calculate_shipping
 from shipping.flags import all_flags, is_enabled
+from shipping.rates import RATES, calculate_shipping
 
 app = Flask(__name__)
 
