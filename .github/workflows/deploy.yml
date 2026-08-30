@@ -94,98 +94,98 @@ jobs:
             -d '{"weight_kg": 10, "tier": "express"}' | grep -q '"cost":150.0'
 
     production:
-    name: Deploy to production
-    needs: [resolve, verify]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      id-token: write
-    concurrency:
-      group: deploy-production
-      cancel-in-progress: false
-    environment:
-      name: production
-      url: http://${{ vars.DEPLOY_HOST }}/health
-    steps:
-      - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v5
-        with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: gha-deploy-${{ github.run_id }}
+      name: Deploy to production
+      needs: [resolve, verify]
+      runs-on: ubuntu-latest
+      timeout-minutes: 15
+      permissions:
+        contents: read
+        id-token: write
+      concurrency:
+        group: deploy-production
+        cancel-in-progress: false
+      environment:
+        name: production
+        url: http://${{ vars.DEPLOY_HOST }}/health
+      steps:
+        - name: Configure AWS credentials via OIDC
+          uses: aws-actions/configure-aws-credentials@v5
+          with:
+            role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+            aws-region: ${{ vars.AWS_REGION }}
+            role-session-name: gha-deploy-${{ github.run_id }}
+  
+        - name: Confirm who we are
+          run: aws sts get-caller-identity
+  
+        - name: Find the instance by tag
+          id: target
+          run: |
+            set -euo pipefail
+            ID=$(aws ec2 describe-instances \
+              --filters "Name=tag:Project,Values=shipping-service" \
+                        "Name=instance-state-name,Values=running" \
+              --query 'Reservations[0].Instances[0].InstanceId' --output text)
+            if [ "$ID" = "None" ] || [ -z "$ID" ]; then
+              echo "::error::No running instance tagged Project=shipping-service"
+              exit 1
+            fi
+            echo "instance_id=$ID" >> "$GITHUB_OUTPUT"
+            echo "Target instance: $ID"
+  
+        - name: Deploy over SSM (no inbound SSH)
+          env:
+            IMAGE: ${{ needs.resolve.outputs.image }}
+            INSTANCE_ID: ${{ steps.target.outputs.instance_id }}
+          run: |
+            set -euo pipefail
+            CMD_ID=$(aws ssm send-command \
+              --instance-ids "$INSTANCE_ID" \
+              --document-name "AWS-RunShellScript" \
+              --comment "deploy ${GITHUB_RUN_ID}" \
+              --parameters "commands=[\"sudo -u ec2-user IMAGE='$IMAGE' APP_ENVIRONMENT=production bash /home/ec2-user/deploy-bluegreen.sh\"]" \
+              --query 'Command.CommandId' --output text)
+            echo "SSM command: $CMD_ID"
+  
+            for i in $(seq 1 60); do
+              STATUS=$(aws ssm get-command-invocation \
+                --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+                --query 'Status' --output text 2>/dev/null || echo "Pending")
+              case "$STATUS" in
+                Success) break ;;
+                Failed|Cancelled|TimedOut) echo "::error::SSM command $STATUS"; break ;;
+              esac
+              sleep 5
+            done
+  
+            aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+              --query 'StandardOutputContent' --output text
+            aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+              --query 'StandardErrorContent' --output text
+  
+            FINAL=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+              --query 'Status' --output text)
+            [ "$FINAL" = "Success" ]
+  
+        - name: Smoke test
+          env:
+            DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          run: |
+            set -euo pipefail
+            BODY=$(curl -fsS --retry 10 --retry-delay 2 --retry-all-errors "http://$DEPLOY_HOST/health")
+            echo "$BODY"
+            echo "$BODY" | grep -q '"environment":"production"'
 
-      - name: Confirm who we are
-        run: aws sts get-caller-identity
-
-      - name: Find the instance by tag
-        id: target
-        run: |
-          set -euo pipefail
-          ID=$(aws ec2 describe-instances \
-            --filters "Name=tag:Project,Values=shipping-service" \
-                      "Name=instance-state-name,Values=running" \
-            --query 'Reservations[0].Instances[0].InstanceId' --output text)
-          if [ "$ID" = "None" ] || [ -z "$ID" ]; then
-            echo "::error::No running instance tagged Project=shipping-service"
-            exit 1
-          fi
-          echo "instance_id=$ID" >> "$GITHUB_OUTPUT"
-          echo "Target instance: $ID"
-
-      - name: Deploy over SSM (no inbound SSH)
-        env:
-          IMAGE: ${{ needs.resolve.outputs.image }}
-          INSTANCE_ID: ${{ steps.target.outputs.instance_id }}
-        run: |
-          set -euo pipefail
-          CMD_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --comment "deploy ${GITHUB_RUN_ID}" \
-            --parameters "commands=[\"sudo -u ec2-user IMAGE='$IMAGE' APP_ENVIRONMENT=production bash /home/ec2-user/deploy-bluegreen.sh\"]" \
-            --query 'Command.CommandId' --output text)
-          echo "SSM command: $CMD_ID"
-
-          for i in $(seq 1 60); do
-            STATUS=$(aws ssm get-command-invocation \
-              --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
-              --query 'Status' --output text 2>/dev/null || echo "Pending")
-            case "$STATUS" in
-              Success) break ;;
-              Failed|Cancelled|TimedOut) echo "::error::SSM command $STATUS"; break ;;
-            esac
-            sleep 5
-          done
-
-          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
-            --query 'StandardOutputContent' --output text
-          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
-            --query 'StandardErrorContent' --output text
-
-          FINAL=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
-            --query 'Status' --output text)
-          [ "$FINAL" = "Success" ]
-
-      - name: Smoke test
-        env:
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
-        run: |
-          set -euo pipefail
-          BODY=$(curl -fsS --retry 10 --retry-delay 2 --retry-all-errors "http://$DEPLOY_HOST/health")
-          echo "$BODY"
-          echo "$BODY" | grep -q '"environment":"production"'
-
-      - name: Record what shipped
-        env:
-          IMAGE: ${{ needs.resolve.outputs.image }}
-        run: |
-          {
-            echo "### Shipped to production"
-            echo ""
-            echo "| Field | Value |"
-            echo "|---|---|"
-            echo "| Image | \`$IMAGE\` |"
-            echo "| Actor | ${{ github.actor }} |"
-            echo "| Run | ${{ github.run_id }} |"
-          } >> "$GITHUB_STEP_SUMMARY"
+        - name: Record what shipped 
+          env:
+            IMAGE: ${{ needs.resolve.outputs.image }}
+          run: |
+            {
+              echo "### Shipped to production"
+              echo ""
+              echo "| Field | Value |"
+              echo "|---|---|"
+              echo "| Image | \`$IMAGE\` |"
+              echo "| Actor | ${{ github.actor }} |"
+              echo "| Run | ${{ github.run_id }} |"
+            } >> "$GITHUB_STEP_SUMMARY"
