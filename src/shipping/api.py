@@ -3,6 +3,7 @@ import os
 from flask import Flask, jsonify, request
 
 from shipping.rates import RATES, calculate_shipping
+from shipping.flags import all_flags, is_enabled
 
 app = Flask(__name__)
 
@@ -12,7 +13,7 @@ ENVIRONMENT = os.environ.get("APP_ENVIRONMENT", "local")
 
 @app.get("/health")
 def health():
-    return jsonify(status="ok", version=VERSION, environment=ENVIRONMENT)
+    return jsonify(status="ok", version=VERSION, environment=ENVIRONMENT, flags=all_flags())
 
 
 @app.get("/rates")
@@ -30,7 +31,7 @@ def quote():
 
     tier = body.get("tier", "standard")
     try:
-        cost = calculate_shipping(weight, tier)
+        cost = calculate_shipping(weight, tier, bulk_discount_enabled=is_enabled("bulk_discount"))
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
 
