@@ -1,0 +1,72 @@
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to roll back"
+        required: true
+        type: choice
+        options: [staging, production]
+      reason:
+        description: "Why are you rolling back? (goes in the audit trail)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    name: Roll back ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    environment:
+      name: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Switch back to the idle colour
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/deploy_key scripts/*.sh "$DEPLOY_USER@$DEPLOY_HOST:/home/$DEPLOY_USER/"
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" 'bash rollback-bluegreen.sh'
+
+      - name: Verify
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          BODY=$(curl -fsS --retry 10 --retry-delay 2 --retry-all-errors "http://$DEPLOY_HOST/health")
+          echo "$BODY"
+          echo "$BODY" | grep -q '"status":"ok"'
+
+      - name: Record the incident
+        run: |
+          {
+            echo "### Rollback executed"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Environment | ${{ inputs.environment }} |"
+            echo "| Reason | ${{ inputs.reason }} |"
+            echo "| Triggered by | ${{ github.actor }} |"
+            echo "| Time | $(date -u +%Y-%m-%dT%H:%M:%SZ) |"
+          } >> "$GITHUB_STEP_SUMMARY"
