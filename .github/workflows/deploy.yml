@@ -118,23 +118,23 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Deploy the exact image that passed staging
+      - name: Blue-green deploy
         env:
           DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
           DEPLOY_USER: ${{ vars.DEPLOY_USER }}
           IMAGE: ${{ needs.resolve.outputs.image }}
         run: |
           set -euo pipefail
-          scp -i ~/.ssh/deploy_key scripts/deploy.sh "$DEPLOY_USER@$DEPLOY_HOST:/home/$DEPLOY_USER/deploy.sh"
+          scp -i ~/.ssh/deploy_key scripts/*.sh "$DEPLOY_USER@$DEPLOY_HOST:/home/$DEPLOY_USER/"
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
-            "IMAGE='$IMAGE' APP_ENVIRONMENT=production HOST_PORT=9000 bash deploy.sh"
+            "IMAGE='$IMAGE' APP_ENVIRONMENT=production bash deploy-bluegreen.sh"
 
       - name: Smoke test production
         env:
           DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
         run: |
           set -euo pipefail
-          BODY=$(curl -fsS --retry 10 --retry-delay 2 --retry-all-errors "http://$DEPLOY_HOST:9000/health")
+          BODY=$(curl -fsS --retry 10 --retry-delay 2 --retry-all-errors "http://$DEPLOY_HOST/health")
           echo "$BODY"
           echo "$BODY" | grep -q '"environment":"production"'
 
