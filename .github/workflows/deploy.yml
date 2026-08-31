@@ -127,10 +127,33 @@ jobs:
           curl -fsS -X POST "http://$DEPLOY_HOST:8000/quote" \
             -H 'Content-Type: application/json' \
             -d '{"weight_kg": 10, "tier": "express"}' | grep -q '"cost":150.0'
+  
+  verify:
+    name: Verify image signature
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      - name: Verify the image was signed by this repository's workflow
+        env:
+          IMAGE: ${{ needs.resolve.outputs.image }}
+        run: |
+          set -euo pipefail
+          cosign verify "$IMAGE" \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/.github/workflows/.*" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            > /dev/null
+          echo "Signature verified for $IMAGE"
 
   production:
     name: Deploy to production
-    needs: [resolve, staging]
+    needs: [resolve, staging, verify]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
