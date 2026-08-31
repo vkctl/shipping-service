@@ -73,7 +73,6 @@ jobs:
           set -euo pipefail
           ID=$(aws ec2 describe-instances \
             --filters "Name=tag:Project,Values=shipping-service" \
-                      "Name=tag:Environment,Values=staging" \
                       "Name=instance-state-name,Values=running" \
             --query 'Reservations[0].Instances[0].InstanceId' --output text)
           if [ "$ID" = "None" ] || [ -z "$ID" ]; then
