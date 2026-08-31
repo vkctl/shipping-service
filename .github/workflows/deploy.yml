@@ -50,6 +50,9 @@ jobs:
     needs: resolve
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
     concurrency:
       group: deploy-staging
       cancel-in-progress: false
@@ -57,29 +60,62 @@ jobs:
       name: staging
       url: http://${{ vars.DEPLOY_HOST }}:8000/health
     steps:
-      - uses: actions/checkout@v6
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-deploy-staging-${{ github.run_id }}
 
-      - name: Configure SSH
-        env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      - name: Find the staging instance by tag
+        id: target
         run: |
           set -euo pipefail
-          mkdir -p ~/.ssh
-          echo "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Project,Values=shipping-service" \
+                      "Name=tag:Environment,Values=staging" \
+                      "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' --output text)
+          if [ "$ID" = "None" ] || [ -z "$ID" ]; then
+            echo "::error::No running staging instance found"
+            exit 1
+          fi
+          echo "instance_id=$ID" >> "$GITHUB_OUTPUT"
+          echo "Target staging instance: $ID"
 
-      - name: Deploy
+      - name: Deploy over SSM
         env:
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
           IMAGE: ${{ needs.resolve.outputs.image }}
+          INSTANCE_ID: ${{ steps.target.outputs.instance_id }}
         run: |
           set -euo pipefail
-          scp -i ~/.ssh/deploy_key scripts/deploy.sh "$DEPLOY_USER@$DEPLOY_HOST:/home/$DEPLOY_USER/deploy.sh"
-          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
-            "IMAGE='$IMAGE' APP_ENVIRONMENT=staging HOST_PORT=8000 bash deploy.sh"
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "deploy staging ${GITHUB_RUN_ID}" \
+            --parameters "commands=[\"sudo -u ec2-user IMAGE='$IMAGE' APP_ENVIRONMENT=staging HOST_PORT=8000 bash /home/ec2-user/deploy.sh\"]" \
+            --query 'Command.CommandId' --output text)
+          echo "SSM command: $CMD_ID"
+
+          for i in $(seq 1 60); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+              --query 'Status' --output text 2>/dev/null || echo "Pending")
+            case "$STATUS" in
+              Success) break ;;
+              Failed|Cancelled|TimedOut) echo "::error::SSM command $STATUS"; break ;;
+            esac
+            sleep 5
+          done
+
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query 'StandardOutputContent' --output text
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query 'StandardErrorContent' --output text
+
+          FINAL=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query 'Status' --output text)
+          [ "$FINAL" = "Success" ]
 
       - name: Smoke test staging
         env:
