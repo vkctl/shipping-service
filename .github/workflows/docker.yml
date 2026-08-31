@@ -99,8 +99,8 @@ jobs:
             APP_VERSION=${{ steps.version.outputs.pep440 }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          provenance: true
-          sbom: true
+          provenance: ${{ github.event_name != 'pull_request' }}
+          sbom: ${{ github.event_name != 'pull_request' }}
 
       - name: Scan the image for vulnerabilities
         uses: aquasecurity/trivy-action@v0.36.0
