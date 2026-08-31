@@ -9,7 +9,7 @@ description = "Calculates shipping cost by weight and service tier"
 requires-python = ">=3.9"
 dependencies = [
     "flask==3.0.3",
-    "gunicorn==22.0.0",
+    "gunicorn==26.2.0",
 ]
 
 [project.optional-dependencies]
