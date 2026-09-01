@@ -16,7 +16,7 @@ dependencies = [
 dev = [
     "pytest==8.3.4",
     "build==1.2.2",
-    "requests==2.32.3"
+    "requests==2.33.0"
 ]
 
 [project.scripts]
